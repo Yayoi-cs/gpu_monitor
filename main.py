@@ -49,12 +49,12 @@ while not stop:
             capture_output=True, text=True, timeout=10
         )
         with open(output, "a") as f:
-            f.write(f"@@SAMPLE_START {{{{time.time()}}}}\\n")
+            f.write("@@SAMPLE_START " + str(time.time()) + "\\n")
             f.write(result.stdout)
             f.write(f"@@SAMPLE_END\\n\\n")
     except Exception as e:
         with open(output, "a") as f:
-            f.write(f"@@ERROR {{{{e}}}}\\n")
+            f.write("@@ERROR " + str(e) + "\\n")
     time.sleep(interval)
 """
 
@@ -292,10 +292,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s run train.sh                        # Monitor GPU while running train.sh
-  %(prog)s run train.sh -o my_log.txt -i 0.5   # Custom output file and 0.5s interval
-  %(prog)s analyze gpu_log.txt                  # Generate plot from log
-  %(prog)s analyze gpu_log.txt -o report.png    # Custom output image
+  %(prog)s run train.sh
+  %(prog)s run train.sh -o my_log.txt -i 0.5
+  %(prog)s analyze gpu_log.txt
+  %(prog)s analyze gpu_log.txt -o report.png
         """,
     )
     subparsers = parser.add_subparsers(dest="mode", required=True)
