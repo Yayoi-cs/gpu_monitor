@@ -10,6 +10,40 @@ from datetime import datetime
 from pathlib import Path
 
 
+def run_sampler(output_path: str, interval: float):
+    stop = False
+
+    def handle_signal(sig, frame):
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    while not stop:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi"],
+                capture_output=True, text=True, timeout=10
+            )
+            with open(output_path, "a") as f:
+                f.write(f"@@SAMPLE_START {time.time()}\n")
+                f.write(result.stdout)
+                f.write("@@SAMPLE_END\n\n")
+        except Exception as e:
+            with open(output_path, "a") as f:
+                f.write(f"@@ERROR {e}\n")
+        time.sleep(interval)
+
+
+def write_log_header(output_path: str, interval: float, script: str = None):
+    with open(output_path, "w") as f:
+        f.write(f"# GPU Monitor Log - Started {datetime.now().isoformat()}\n")
+        if script:
+            f.write(f"# Script: {script}\n")
+        f.write(f"# Interval: {interval}s\n\n")
+
+
 def run_mode(script_path: str, output_path: str, interval: float):
     script_path = os.path.abspath(script_path)
     output_path = os.path.abspath(output_path)
@@ -18,48 +52,18 @@ def run_mode(script_path: str, output_path: str, interval: float):
         print(f"Error: script not found: {script_path}")
         sys.exit(1)
 
-    with open(output_path, "w") as f:
-        f.write(f"# GPU Monitor Log - Started {datetime.now().isoformat()}\n")
-        f.write(f"# Script: {script_path}\n")
-        f.write(f"# Interval: {interval}s\n\n")
+    write_log_header(output_path, interval, script_path)
 
     print(f"[gpu_monitor] Logging to : {output_path}")
     print(f"[gpu_monitor] Running    : {script_path}")
     print(f"[gpu_monitor] Interval   : {interval}s")
     print()
 
-    sampler_script = f"""
-import subprocess, time, sys, os, signal
-
-output = "{output_path}"
-interval = {interval}
-stop = False
-
-def handle(sig, frame):
-    global stop
-    stop = True
-
-signal.signal(signal.SIGTERM, handle)
-signal.signal(signal.SIGINT, handle)
-
-while not stop:
-    try:
-        result = subprocess.run(
-            ["nvidia-smi"],
-            capture_output=True, text=True, timeout=10
-        )
-        with open(output, "a") as f:
-            f.write("@@SAMPLE_START " + str(time.time()) + "\\n")
-            f.write(result.stdout)
-            f.write(f"@@SAMPLE_END\\n\\n")
-    except Exception as e:
-        with open(output, "a") as f:
-            f.write("@@ERROR " + str(e) + "\\n")
-    time.sleep(interval)
-"""
-
     proc_sampler = subprocess.Popen(
-        [sys.executable, "-c", sampler_script],
+        [sys.executable, __file__, "monitor",
+         "--output", output_path,
+         "--interval", str(interval),
+         "--no-header"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -81,19 +85,23 @@ while not stop:
     finally:
         proc_sampler.terminate()
         proc_sampler.wait()
-        try:
-            result = subprocess.run(
-                ["nvidia-smi"], capture_output=True, text=True, timeout=10
-            )
-            with open(output_path, "a") as f:
-                f.write(f"@@SAMPLE_START {time.time()}\n")
-                f.write(result.stdout)
-                f.write(f"@@SAMPLE_END\n\n")
-        except Exception:
-            pass
 
     print(f"[gpu_monitor] Log saved to {output_path}")
     return exit_code
+
+
+def monitor_mode(output_path: str, interval: float, write_header: bool = True):
+    output_path = os.path.abspath(output_path)
+
+    if write_header:
+        write_log_header(output_path, interval)
+
+    print(f"[gpu_monitor] PID={os.getpid()} logging to {output_path} every {interval}s",
+          file=sys.stderr)
+
+    run_sampler(output_path, interval)
+
+    print(f"\n[gpu_monitor] Stopped. Log saved to {output_path}", file=sys.stderr)
 
 
 def parse_log(log_path: str) -> list[dict]:
@@ -288,12 +296,13 @@ def analyze_mode(log_path: str, output_path: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="GPU Usage Visualizer — monitor and analyze nvidia-smi output",
+        description="GPU Usage Visualizer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s run train.sh
   %(prog)s run train.sh -o my_log.txt -i 0.5
+  %(prog)s monitor -o gpu_log.txt &
   %(prog)s analyze gpu_log.txt
   %(prog)s analyze gpu_log.txt -o report.png
         """,
@@ -311,6 +320,20 @@ Examples:
         help="Sampling interval in seconds (default: 1.0)",
     )
 
+    mon_parser = subparsers.add_parser("monitor", help="Run nvidia-smi sampler only (background with &)")
+    mon_parser.add_argument(
+        "-o", "--output", default="gpu_log.txt",
+        help="Output log file (default: gpu_log.txt)",
+    )
+    mon_parser.add_argument(
+        "-i", "--interval", type=float, default=1.0,
+        help="Sampling interval in seconds (default: 1.0)",
+    )
+    mon_parser.add_argument(
+        "--no-header", action="store_true",
+        help=argparse.SUPPRESS,
+    )
+
     analyze_parser = subparsers.add_parser("analyze", help="Analyze and visualize a GPU log")
     analyze_parser.add_argument("log", help="Path to the GPU log file")
     analyze_parser.add_argument(
@@ -323,6 +346,8 @@ Examples:
     if args.mode == "run":
         exit_code = run_mode(args.script, args.output, args.interval)
         sys.exit(exit_code)
+    elif args.mode == "monitor":
+        monitor_mode(args.output, args.interval, write_header=not args.no_header)
     elif args.mode == "analyze":
         analyze_mode(args.log, args.output)
 
